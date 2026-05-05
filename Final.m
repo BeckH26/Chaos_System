@@ -136,8 +136,8 @@ function ds = eom(~, s, m, k, L0, c, anchors)
         dx  = ax - px;
         dy  = ay - py;
         d   = sqrt(dx^2 + dy^2);
-        if d > 1e-10                      % avoid division by zero
-            F   = k * (d - L0) / d;      % spring force magnitude / d
+        if d > 1e-10                     
+            F   = k * (d - L0) / d;    
             Fx  = Fx + F * dx;
             Fy  = Fy + F * dy;
         end
