@@ -1,151 +1,274 @@
 clear; clc; close all;
 
-%  paramaters
-m = 1.0; % mass
-k = 1.0; % spring stiffness [N/m]
-L0 = 1.5; % natural (rest) length of each spring [m]
-R = 2.0; % ring radius = distance from centre to each anchor [m]
-c = 0.05; % damping coefficient [N·s/m]
+%  parameters
+m        = 1.0;  % mass [kg]
+k        = 1.0;  % spring stiffness [N/m]
+L0       = 1.5;  % natural (rest) length of each spring [m]
+R        = 2.0;  % ring radius = distance from centre to each anchor [m]
+c        = 0.05; % damping coefficient [N·s/m]
+nSprings = 3;    % how many anchors around the ring
+nMasses  = 2;    % how many masses to simulate
 
-x0 = 0.3; % initial x displacement
-y0 = 0.8; % initial y displacement
-vx0 = 0.5; % initial x velocity
-vy0 = -0.2; % initial y velocity
+%  video
+MAKE_VIDEO = true;
+VIDEO_FILE = 'spring_sim.mp4';
+VIDEO_FPS  = 30;
+ANIM_STEP  = 20;  % basically speed, 8 is normal
 
-tspan = [0 200];
+%  initial conditions, one row per mass: [x0 y0 vx0 vy0]
+ICs = [ 0.0,  1.1,  0.6,  0.0;
+        0.0,  1.0,  0.5,  0.0;
+       -1.0,  0.5,  0.0, -0.5];
 
-angles  = [90, 210, 330]; % angles where the springs are
-anchors = R * [cosd(angles)', sind(angles)']; % 3x2 matrix
+colors = lines(nMasses);
 
-% Equation
-ode = @(t, s) eom(t, s, m, k, L0, c, anchors);
+% anchor angles evenly spaced, starting at 90 deg
+angles  = 90 + (0:nSprings-1) * (360/nSprings);
+anchors = R * [cosd(angles)', sind(angles)'];
 
-%  Integrate
+% pack all masses into one state vector [x1 y1 vx1 vy1  x2 y2 vx2 vy2 ...]
+ic0 = reshape(ICs(1:nMasses,:)', [], 1);
+
+% equation of motion
+ode = @(t, s) eom(t, s, m, k, L0, c, anchors, nMasses);
+
+%  integrate
 opts = odeset('RelTol', 1e-9, 'AbsTol', 1e-11, 'MaxStep', 0.05);
-ic   = [x0; y0; vx0; vy0];
-[t, S] = ode45(ode, tspan, ic, opts);
+[t, S] = ode45(ode, [0 200], ic0, opts);
 
-x  = S(:,1);
-y  = S(:,2);
-vx = S(:,3);
-vy = S(:,4);
+% unpack trajoctories
+Pos = cell(nMasses, 1);
+for p = 1:nMasses
+    cols = (p-1)*4 + (1:4);
+    Pos{p}.x  = S(:, cols(1));
+    Pos{p}.y  = S(:, cols(2));
+    Pos{p}.vx = S(:, cols(3));
+    Pos{p}.vy = S(:, cols(4));
 
-PE = zeros(size(x));
-for i = 1:3
-    d   = sqrt((x - anchors(i,1)).^2 + (y - anchors(i,2)).^2);
-    PE  = PE + 0.5 * k * (d - L0).^2;
+    PE = zeros(size(t));
+    for i = 1:nSprings
+        d  = sqrt((Pos{p}.x - anchors(i,1)).^2 + (Pos{p}.y - anchors(i,2)).^2);
+        PE = PE + 0.5 * k * (d - L0).^2;
+    end
+    Pos{p}.KE   = 0.5 * m * (Pos{p}.vx.^2 + Pos{p}.vy.^2);
+    Pos{p}.PE   = PE;
+    Pos{p}.Etot = Pos{p}.KE + PE;
 end
-KE    = 0.5 * m * (vx.^2 + vy.^2);
-Etot  = KE + PE;
 
-% trajecrory in the ring
-figure('Name','Trajectory','Color','w','Position',[100 100 600 600]);
+% legend labels
+legLabels = cell(nMasses, 1);
+for p = 1:nMasses
+    legLabels{p} = sprintf('Mass %d  (x_0=%.1f, y_0=%.1f)', p, ICs(p,1), ICs(p,2));
+end
+
+% trajectory in the ring
+figure('Name', 'Trajectory', 'Color', 'w', 'Position', [100 100 600 600]);
 hold on; axis equal; axis off;
 
-% Draw ring
-th   = linspace(0, 2*pi, 300);
-fill(R*cos(th), R*sin(th), [0.95 0.95 0.98], 'EdgeColor',[0.5 0.5 0.6], ...
+% draw ring
+th = linspace(0, 2*pi, 300);
+fill(R*cos(th), R*sin(th), [0.95 0.95 0.98], 'EdgeColor', [0.5 0.5 0.6], ...
      'LineWidth', 1.5);
 
-% Draw spring anchors
-for i = 1:3
-    plot(anchors(i,1), anchors(i,2), 'ko', 'MarkerFaceColor',[0.2 0.2 0.8], ...
+% draw anchors
+for i = 1:nSprings
+    plot(anchors(i,1), anchors(i,2), 'ko', 'MarkerFaceColor', [0.2 0.2 0.8], ...
          'MarkerSize', 10);
 end
+anchorH = plot(nan, nan, 'ko', 'MarkerFaceColor', [0.2 0.2 0.8], 'MarkerSize', 10);
 
-% Colour trajectory by time 
-n   = length(t);
-seg = max(1, floor(n/1000));   % plot ~1000 segments
-idx = 1:seg:n;
-cmap = jet(length(idx));
-for j = 1:length(idx)-1
-    i1 = idx(j); i2 = idx(j+1);
-    plot(x(i1:i2), y(i1:i2), '-', 'Color', cmap(j,:), 'LineWidth', 0.6);
+% draw trajectories
+trailH = gobjects(nMasses, 1);
+for p = 1:nMasses
+    x = Pos{p}.x;  y = Pos{p}.y;
+    n   = length(x);
+    seg = max(1, floor(n/1000));
+    for j = 1:seg:n-1
+        plot(x(j:min(j+seg,n)), y(j:min(j+seg,n)), '-', ...
+             'Color', colors(p,:), 'LineWidth', 0.6);
+    end
+    plot(x(1),   y(1),   'g^', 'MarkerFaceColor', 'g', 'MarkerSize', 9);
+    plot(x(end), y(end), 'rs', 'MarkerFaceColor', 'r', 'MarkerSize', 9);
+    trailH(p) = plot(nan, nan, '-', 'Color', colors(p,:), 'LineWidth', 2);
+end
+startH = plot(nan, nan, 'g^', 'MarkerFaceColor', 'g', 'MarkerSize', 9);
+endH   = plot(nan, nan, 'rs', 'MarkerFaceColor', 'r', 'MarkerSize', 9);
+
+% spring lines at t=0 for mass 1
+for i = 1:nSprings
+    plot([Pos{1}.x(1) anchors(i,1)], [Pos{1}.y(1) anchors(i,2)], '--', ...
+         'Color', [0.6 0.6 0.6], 'LineWidth', 1);
 end
 
-% Mark start
-plot(x(1), y(1), 'g^', 'MarkerFaceColor','g', 'MarkerSize', 9);
-plot(x(end), y(end), 'rs', 'MarkerFaceColor','r', 'MarkerSize', 9);
-
-% Spring lines at t=0
-for i = 1:3
-    plot([x(1) anchors(i,1)], [y(1) anchors(i,2)], '--', ...
-         'Color',[0.6 0.6 0.6], 'LineWidth', 1);
-end
-
-title(sprintf('Trajectory   k=%.2f  L_0=%.2f  c=%.3f', k, L0, c), ...
-      'FontSize', 13);
-legend({'','Anchor','','Trajectory','Start','End'}, 'Location','southeast');
-colormap(jet); cb = colorbar; cb.Label.String = 'Time progression →';
-clim([0 1]);
+title(sprintf('Trajectory   k=%.2f  L_0=%.2f  c=%.3f', k, L0, c), 'FontSize', 13);
+legend([anchorH; trailH; startH; endH], ...
+       [{'Spring'}; legLabels; {'Start'}; {'End'}], 'Location', 'southeast');
 
 % phase portraits
-figure('Name','Phase Portraits','Color','w','Position',[720 100 800 400]);
+figure('Name', 'Phase Portraits', 'Color', 'w', 'Position', [720 100 800 400]);
+for p = 1:nMasses
+    n   = length(t);
+    seg = max(1, floor(n/1000));
+    idx = 1:seg:n;
+    c_rep = repmat(colors(p,:), numel(idx), 1);
+
+    subplot(1,2,1); hold on;
+    scatter(Pos{p}.x(idx), Pos{p}.vx(idx), 2, c_rep, 'filled');
+
+    subplot(1,2,2); hold on;
+    scatter(Pos{p}.y(idx), Pos{p}.vy(idx), 2, c_rep, 'filled');
+end
 
 subplot(1,2,1);
-scatter(x(1:seg:end), vx(1:seg:end), 2, t(1:seg:end), 'filled');
-colormap(jet); colorbar;
-xlabel('x'); ylabel('v_x');
-title('Phase portrait  x–v_x'); grid on; box on;
+xlabel('x'); ylabel('v_x'); title('Phase portrait  x–v_x'); grid on; box on;
+dh = gobjects(nMasses, 1);
+for p = 1:nMasses
+    dh(p) = plot(nan, nan, 'o', 'Color', colors(p,:), ...
+                 'MarkerFaceColor', colors(p,:), 'MarkerSize', 6);
+end
+legend(dh, legLabels, 'Location', 'best');
 
 subplot(1,2,2);
-scatter(y(1:seg:end), vy(1:seg:end), 2, t(1:seg:end), 'filled');
-colormap(jet); colorbar;
-xlabel('y'); ylabel('v_y');
-title('Phase portrait  y–v_y'); grid on; box on;
+xlabel('y'); ylabel('v_y'); title('Phase portrait  y–v_y'); grid on; box on;
 
-%  energy vs time
-figure('Name','Energy','Color','w','Position',[100 720 800 300]);
-plot(t, KE,   'b', 'LineWidth', 1,   'DisplayName','Kinetic');
+% energy vs time
+figure('Name', 'Energy', 'Color', 'w', 'Position', [100 720 800 300]);
 hold on;
-plot(t, PE,   'r', 'LineWidth', 1,   'DisplayName','Potential');
-plot(t, Etot, 'k', 'LineWidth', 1.5, 'DisplayName','Total');
+for p = 1:nMasses
+    plot(t, Pos{p}.KE,   'b',  'LineWidth', 1,   'DisplayName', sprintf('Kinetic M%d',   p));
+    plot(t, Pos{p}.PE,   'r',  'LineWidth', 1,   'DisplayName', sprintf('Potential M%d', p));
+    plot(t, Pos{p}.Etot, 'k',  'LineWidth', 1.5, 'DisplayName', sprintf('Total M%d',     p));
+end
 xlabel('Time [s]'); ylabel('Energy [J]');
 title('Energy over time'); legend; grid on; box on;
 
-
-%  heat map
-figure('Name','Potential Landscape','Color','w','Position',[920 720 500 450]);
+% heat map
+figure('Name', 'Potential Landscape', 'Color', 'w', 'Position', [920 720 500 450]);
 [Xg, Yg] = meshgrid(linspace(-R,R,300), linspace(-R,R,300));
-Vg       = zeros(size(Xg));
-for i = 1:3
+Vg = zeros(size(Xg));
+for i = 1:nSprings
     dg = sqrt((Xg - anchors(i,1)).^2 + (Yg - anchors(i,2)).^2);
     Vg = Vg + 0.5 * k * (dg - L0).^2;
 end
-% Mask outside ring
-outside  = (Xg.^2 + Yg.^2) > R^2;
+% mask outside ring
+outside = (Xg.^2 + Yg.^2) > R^2;
 Vg(outside) = NaN;
 
-contourf(Xg, Yg, Vg, 40, 'LineStyle','none');
-colormap(hot); colorbar;
-hold on;
-plot(anchors(:,1), anchors(:,2), 'co', 'MarkerFaceColor','c', 'MarkerSize',8);
-plot(x(1:seg:end), y(1:seg:end), 'b.', 'MarkerSize', 1);
-title('Potential energy landscape + trajectory','FontSize',12);
+contourf(Xg, Yg, Vg, 40, 'LineStyle', 'none');
+colormap(hot); colorbar; hold on;
+plot(anchors(:,1), anchors(:,2), 'co', 'MarkerFaceColor', 'c', 'MarkerSize', 8);
+for p = 1:nMasses
+    n   = length(t);
+    seg = max(1, floor(n/1000));
+    plot(Pos{p}.x(1:seg:end), Pos{p}.y(1:seg:end), '.', ...
+         'Color', colors(p,:), 'MarkerSize', 1);
+end
+title('Potential energy landscape + trajectory', 'FontSize', 12);
 axis equal; xlabel('x'); ylabel('y');
 
-%  equations of motion
-function ds = eom(~, s, m, k, L0, c, anchors)
-    px = s(1); py = s(2);
-    vx = s(3); vy = s(4);
+% video
+figAnim = figure('Name', 'Animation', 'Color', 'w', 'Position', [150 150 650 650]);
 
-    Fx = 0; Fy = 0;
-    for i = 1:size(anchors,1)
-        ax  = anchors(i,1);
-        ay  = anchors(i,2);
-        dx  = ax - px;
-        dy  = ay - py;
-        d   = sqrt(dx^2 + dy^2);
-        if d > 1e-10                     
-            F   = k * (d - L0) / d;    
-            Fx  = Fx + F * dx;
-            Fy  = Fy + F * dy;
+if MAKE_VIDEO
+    vw = VideoWriter(VIDEO_FILE, 'MPEG-4');
+    vw.FrameRate = VIDEO_FPS;
+    open(vw);
+end
+
+nFrames = floor(length(t) / ANIM_STEP);
+
+ax = axes('Parent', figAnim);
+hold(ax, 'on'); axis(ax, 'equal'); axis(ax, 'off');
+axis(ax, [-R-0.3 R+0.3 -R-0.3 R+0.3]);
+
+% draw ring and anchors
+th = linspace(0, 2*pi, 300);
+fill(R*cos(th), R*sin(th), [0.95 0.95 0.98], ...
+     'EdgeColor', [0.5 0.5 0.6], 'LineWidth', 1.5, 'Parent', ax);
+plot(ax, anchors(:,1), anchors(:,2), 'o', ...
+     'MarkerFaceColor', [0.2 0.2 0.8], 'MarkerEdgeColor', 'k', 'MarkerSize', 10);
+
+% one trail + mass dot + spring lines per mass, path grows and never erases
+animTrail  = gobjects(nMasses, 1);
+animMass   = gobjects(nMasses, 1);
+animSpring = gobjects(nMasses, nSprings);
+for p = 1:nMasses
+    animTrail(p) = plot(ax, nan, nan, '-', 'Color', colors(p,:), 'LineWidth', 1.2);
+    animMass(p)  = plot(ax, nan, nan, 'o', 'MarkerFaceColor', colors(p,:), ...
+                        'MarkerEdgeColor', 'k', 'MarkerSize', 13);
+    for sp = 1:nSprings
+        animSpring(p,sp) = plot(ax, nan, nan, '-', ...
+                                'Color', colors(p,:)*0.6, 'LineWidth', 1.2);
+    end
+end
+
+% legend
+lh = gobjects(nMasses+1, 1);
+for p = 1:nMasses
+    lh(p) = plot(ax, nan, nan, '-o', 'Color', colors(p,:), 'LineWidth', 2, ...
+                 'MarkerSize', 7, 'MarkerFaceColor', colors(p,:));
+end
+lh(nMasses+1) = plot(ax, nan, nan, 'o', 'MarkerFaceColor', [0.2 0.2 0.8], ...
+                     'MarkerEdgeColor', 'k', 'MarkerSize', 9);
+legend(ax, lh, [legLabels; {'Spring'}], 'Location', 'southeast');
+
+timeTxt = text(ax, -R+0.05, R-0.15, '', 'FontSize', 11, 'FontWeight', 'bold');
+
+for f = 1:nFrames
+    fi = min(f * ANIM_STEP, length(t));
+    for p = 1:nMasses
+        x = Pos{p}.x;
+        y = Pos{p}.y;
+
+        set(animTrail(p), 'XData', x(1:fi), 'YData', y(1:fi));
+        set(animMass(p),  'XData', x(fi),    'YData', y(fi));
+        for sp = 1:nSprings
+            set(animSpring(p,sp), ...
+                'XData', [x(fi) anchors(sp,1)], ...
+                'YData', [y(fi) anchors(sp,2)]);
         end
     end
+    set(timeTxt, 'String', sprintf('t = %.1f s', t(fi)));
+    drawnow;
 
-    % Damping
-    Fx = Fx - c * vx;
-    Fy = Fy - c * vy;
+    if MAKE_VIDEO
+        writeVideo(vw, getframe(figAnim));
+    end
+end
 
-    ds = [vx; vy; Fx/m; Fy/m];
+if MAKE_VIDEO
+    close(vw);
+end
+
+%  equations of motion — state: [x1 y1 vx1 vy1  x2 y2 vx2 vy2 ...]
+function ds = eom(~, s, m, k, L0, c, anchors, nMasses)
+    ds = zeros(4*nMasses, 1);
+    for p = 1:nMasses
+        idx = (p-1)*4 + 1;
+        px = s(idx);   py = s(idx+1);
+        vx = s(idx+2); vy = s(idx+3);
+
+        Fx = 0; Fy = 0;
+        for i = 1:size(anchors,1)
+            ax  = anchors(i,1);
+            ay  = anchors(i,2);
+            dx  = ax - px;
+            dy  = ay - py;
+            d   = sqrt(dx^2 + dy^2);
+            if d > 1e-10
+                F   = k * (d - L0) / d;
+                Fx  = Fx + F * dx;
+                Fy  = Fy + F * dy;
+            end
+        end
+
+        % damping
+        Fx = Fx - c * vx;
+        Fy = Fy - c * vy;
+
+        ds(idx)   = vx;
+        ds(idx+1) = vy;
+        ds(idx+2) = Fx / m;
+        ds(idx+3) = Fy / m;
+    end
 end
