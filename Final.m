@@ -13,7 +13,7 @@ nMasses  = 2;    % how many masses to simulate
 MAKE_VIDEO = true;
 VIDEO_FILE = 'spring_sim.mp4';
 VIDEO_FPS  = 30;
-ANIM_STEP  = 20;  % basically speed, 8 is normal
+ANIM_STEP  = 20;  % basically speed
 
 %  initial conditions, one row per mass: [x0 y0 vx0 vy0]
 ICs = [ 0.0,  1.1,  0.6,  0.0;
